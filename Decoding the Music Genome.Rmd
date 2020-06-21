@@ -1,0 +1,332 @@
+---
+title: "Decoding the Musical Genome"
+author: "Lakshya Dugar"
+date: "6/18/2020"
+output:
+  pdf_document:
+    toc: yes
+  html_notebook:
+    theme: cosmo
+---
+
+\newpage
+## INTRODUCTION  
+Google defines music as a collection of coordinated sounds. Making music is said to be the process of putting sounds and tones in an order.  
+  
+  
+In the first part of this project I will try to determine if music can be decoded and if every genre can be explained and appropriately predicted in its simplest form, using the following data-points:  
+  
+**Danceability** - the ease with which a person could dance to a song over the course of the whole song,  
+**Energy** - how fast paced vs slow paced the song is,  
+**Key** - the major or minor scale around which a piece of music revolves,  
+**Loudness** - attribute of auditory sensation in terms of which sounds can be ordered on a scale extending from quiet to loud,  
+**Mode** - a type of musical scale coupled with a set of characteristic melodic behaviors,  
+**Speechness** - the presence of spoken words in a track,  
+**Acousticness** -  describes how acoustic a song is,  
+**Instrumentalness** - the amount of vocals in the song,  
+**Liveness** - probability that the song was recorded with a live audience,  
+**Valence** - the musical positiveness conveyed by a track,  
+**Tempo** - the pace or speed at which a section of music is played (BPM),  
+**Duration_ms** - duration of the song in minutes,  
+**time_signature** - Release date.  
+  
+We will try to predict the genres just from these criterion and see if genres are essentially just their genome or is there something else. Additionally, since this data set of just 131,580 songs has 626 genres, we will see what is the state of the overlap and if just using the genome is viable to predict the genres.
+  
+Aim - To see analysing just the musical genome is a viable model for the predictive analysis of the genres.
+
+## LOADING LIBRARIES
+```{r loading, results = "hide", warning = FALSE, message = FALSE}
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(caTools)) install.packages("caTools", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(class)) install.packages("class", repos = "http://cran.us.r-project.org")
+if(!require(mlbench)) install.packages("mlbench", repos = "http://cran.us.r-project.org")
+if(!require(glmnet)) install.packages("glmnet", repos = "http://cran.us.r-project.org")
+if(!require(nnet)) install.packages("nnet", repos = "http://cran.us.r-project.org")
+if(!require(DescTools)) install.packages("DescTools", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+```
+
+\newpage
+## DATA WRANGLING
+To complete this classification exercise, we’re going to borrow [**Adri Molina’s dataset**](https://www.kaggle.com/grasslover/spotify-music-genre-list/download) from Kaggle which contains a TSV file full of songs and features that will help us categorize the songs into groups (like time signature , key, and tempo).  
+
+Let’s be sure to eliminate any columns that aren’t useful features, and change any factors (besides the predicted factor, “Genre”) to numerics, to simplify things
+```{r wrangling, results = "hide"}
+#Read in the file, which is tab-delimited
+data.full <-
+  read.delim("songDb.tsv", header = TRUE, sep = "\t")
+
+# Remove columns that don't serve as features (the Spotify URI, 
+# The track reference, the full URL, etc.)
+datax <-
+  subset(data.full,
+         select = -c(Uri, Ref_Track, URL_features, Type, ID, Name))
+
+# Identify each song by its name (by changing the row names to song names)
+rownames(datax) <- make.names(data.full$Name, unique = TRUE)
+# Ensure the time signature is numeric, rather than a factor
+datax$time_signature <- as.numeric(datax$time_signature)
+
+# Tempo should also be numeric
+datax$Tempo <- as.numeric(datax$Tempo)
+```
+Now the data is ready in the format that is suitable for our analysis and we can proceed with the project.
+
+This is what our data set looks like:
+```{r Datax}
+as_tibble(datax)
+```
+
+\newpage
+These are the summary statistics:
+```{r summaryDatax}
+summary(datax)
+```
+
+\newpage
+## FUNCTIONS and METHODS
+Let's load the functions that we'll need for the first part of our project
+
+### Test and Train Sets
+Let’s also define a function that makes it easy to create our train and test sets. 
+(Storing both, the full train and test sets as well as the separate X and Y data frames for each might seem redundant but it will make things just a bit easier down the road)
+```{r dataframes}
+get_train_test <- function(split_ratio, data) {
+  results <- list()
+  
+  split.index <- sample.split(seq_len(nrow(data)), split_ratio)
+  
+  results$data.train <- data[split.index, ]
+  results$data.test <- data[!split.index, ]
+  
+  results$X.train <-
+    results$data.train %>% select(-Genre) %>% as.matrix()
+  results$Y.train <- results$data.train$Genre
+  
+  results$X.test <-
+    results$data.test %>% select(-Genre) %>% as.matrix()
+  results$Y.test <- results$data.test$Genre
+  return(results)
+}
+```
+
+\newpage
+### kNN Model
+Let's make a function which allows us the subset the entire dataset to contain songs only of a particular genre and will give us the accuracy of our algorithm using the k-Nearest-Neighbours model.
+Why we subset our data to include only specific genres will become clear later.
+```{r kNN}
+knn_function <- function(data, genres) {
+  data.sub <- data[data$Genre %in% genres, ]
+  data.sub$Genre <- droplevels(data.sub$Genre)
+  
+  set.seed(101)
+  # Create an empty data frame to store the predictions and the actual labels
+  classifications <- data.frame(pred = factor(), actual = factor())
+  # Use K-fold cross validation
+  K = 5
+  for (k in 1:K) {
+    # shuffle the data
+    res <- get_train_test(0.8, data.sub)
+    fit.knn <-
+      knn(
+        train = res$X.train,
+        test = res$X.test,
+        cl = res$Y.train
+      )
+    classifications <-
+      rbind(classifications,
+            data.frame(pred = fit.knn, actual = res$Y.test))
+  }
+  confusionMatrix(classifications$pred, classifications$actual)
+}
+```
+
+\newpage
+### Decision Trees Model
+Similar to the kNN, let's make a function which allows us the subset the entire dataset to contain songs only of a particular genre which will give us the accuracy of our algorithm using the decision trees model. 
+Why we subset our data to include only specific genres will become clear later.
+```{r decisionTree}
+dtree_function <- function(data, genres) {
+  data.sub <- data[data$Genre %in% genres,]
+  data.sub$Genre <- droplevels(data.sub$Genre)
+  res <- get_train_test(0.8, data.sub)
+  
+  # Decision Tree
+  set.seed(103)
+  fit.dtree <-
+    train(
+      Genre ~ .,
+      data = res$data.train,
+      method = "rpart",
+      parms = list(split = "information")
+    )
+  
+  Y.pred.dtree <-
+    predict(fit.dtree, newdata = data.frame(res$X.test), type = "raw")
+  confusionMatrix(Y.pred.dtree, res$Y.test)
+}
+
+```
+
+\newpage
+## PILOT RESULTS
+Let's sample 10 genres at random from the dataset and see what our accuracy is
+```{r random10}
+set.seed(3)
+genres <- sample(levels(datax$Genre), 10)
+knn_function(datax, genres)$overall["Accuracy"]
+dtree_function(datax, genres)$overall["Accuracy"]
+```
+
+Here's the histogram of the frequency distribution of the accuracy
+```{r frdistribution}
+set.seed(1)
+distributionkNN <- replicate(100,{
+  genres <- sample(levels(datax$Genre), 10)
+  knn_function(datax, genres)$overall["Accuracy"]
+})
+
+hist(distributionkNN)
+```
+
+As we can see, a vast majority of the accuracy distribution is less than 0.5. 
+Let's select 10 genres that we know to be sufficiently different from each other in terms of their genome composition and see if that increases the accuracy much.
+```{r different10}
+genres <-
+  list(
+    "canadianpop",
+    "electronica",
+    "rock",
+    "modernblues",
+    "r&b",
+    "polishblackmetal",
+    "videogamemusic",
+    "irishfolk",
+    "koreanpop",
+    "hiphop"
+  )
+knn_function(datax, genres)$overall["Accuracy"]
+dtree_function(datax, genres)$overall["Accuracy"]
+```
+
+\newpage
+## ANALYSIS
+As we can see, the accuracy is incredibly poor, even when we picked genres that seem to be different. Let's try to analyze the cause of this by analysing.  
+    
+**kNN Model**
+```{r different10kNN}
+genres <-
+  list(
+    "canadianpop",
+    "electronica",
+    "rock",
+    "modernblues",
+    "r&b",
+    "polishblackmetal",
+    "videogamemusic",
+    "irishfolk",
+    "koreanpop",
+    "hiphop"
+  )
+knn_function(datax, genres)
+```
+
+As we can see from the results, several genres are more obscure, and/or have only a small number of songs in the given dataset. Consequently, the KNN algorithm will find very few neighbors of these genres when trying to classify any given point. Therefore, it makes sense that the classification accuracy and other stats would be poor, since KNN makes a decision based on label popularity. If we only have 5 nearby labels (genres) to look at, and each one is different (due to the low proportion of songs in each of the nearby genres), then it’s essentially a toss-up for assigning a predicted label.
+
+\newpage
+Let's analyse the **Decision Tree** model:
+```{r different10dTree}
+genres <-
+  list(
+    "canadianpop",
+    "electronica",
+    "rock",
+    "modernblues",
+    "r&b",
+    "polishblackmetal",
+    "videogamemusic",
+    "irishfolk",
+    "koreanpop",
+    "hiphop"
+  )
+dtree_function(datax, genres)
+```
+
+Decision tree classifiers are great for both binary and multi-class problems. They make decisions based on the values (branches) of attributes (leaves / nodes) of the thing being classified, traversing a tree-like structure until reaching a final classification. So in our case, the leaves would be song attributes like “tempo” or “danceability”, and the branches would be the different values each attribute can take. As we saw before, having very few songs in a particular genre is the most likely culprit of our poor results. There’s also the issue of class imbalance, where some genres (like Hip Hop and Canadian pop) have a far greater percentage of songs than other genres do.
+
+\newpage
+## TRYING TO IMPROVE ACCURACY
+
+Let's see what the most popular genres are.
+```{r popularGenre}
+descending <- datax %>% group_by(Genre) %>% summarise(n = n()) %>% arrange(desc(n))
+descending
+```
+
+If we reduce the genres to only those that are very common, the kNN Model in theory should show a considerable improvement as any given label will have plenty of neighbours. Let's try by keeping only the top 30 most popular genres.
+```{r popularGenre30}
+genre_top30 <- descending$Genre[1:30]
+new_data <- filter(datax, Genre %in% genre_top30)
+
+knn_function(new_data, genre_top30)$overall["Accuracy"]
+```
+
+This accuracy is actually worse than when we hand-picked the genres. Let's see the trend in this accuracy as we pick the top 50 to the top 10 most common genres.
+```{r popularGenreTrend}
+seqx <- 50:10
+top_trend <- function(x){
+  genre_topx <- descending$Genre[1:x]
+  new_datax <- filter(datax, Genre %in% genre_topx)
+  knn_function(new_datax, genre_topx)$overall["Accuracy"]
+}
+
+accuracy_trend <- sapply(seqx, top_trend)
+ggplot(data.frame(accuracy_trend), aes(x = seqx, y = accuracy_trend)) + geom_point() + geom_line()
+```
+Even in our best case scenario, when we use only 10 genres, our accuracy is still only `r top_trend(10)`  
+
+\newpage
+## CONCLUSION
+No matter what we try and even when we consider the practically impossible scenario of only including the top 10 most common genres, are accuracy does not increase much beyond 0.5. This means that there is massive overlap within the genres. The possible cause for this could be that spotify divides their data into these many genres to aid their machine learning algorithm which predicts user behaviour and not genre.  
+Let's see some overlapping genres:
+```{r overlappingGenres}
+genre_grouped <- datax %>% group_by(Genre) %>%
+  summarise(dance = mean(Danceability),
+            energy = mean(Energy),
+            key = mean(Key),
+            loudness = mean(Loudness),
+            mode = mean(Mode),
+            speechness = mean(Speechness),
+            acousticness = mean(Acousticness),
+            intstrumentalness = mean(Instrumentalness),
+            liveness = mean(Liveness),
+            valence = mean(Valence),
+            tempo = mean(Tempo),
+            duration = mean(Duration_ms),
+            Time = mean(time_signature)) %>%
+  arrange(Genre)
+
+genre_grouped
+```
+
+\newpage
+Let's see the overlap between Swedish Death Metal and Polish Black Metal:
+```{r swpoOverlap}
+print(genre_grouped[c(which(genre_grouped$Genre == "swedishdeathmetal"), 
+                      which(genre_grouped$Genre == "polishblackmetal")), ], width = Inf)
+```
+
+What about Emo Pop and Indonesian Punk Pop
+```{r emoindOverlap}
+print(genre_grouped[c(which(genre_grouped$Genre == "indonesianpoppunk"), 
+                      which(genre_grouped$Genre == "popemo")), ], width = Inf)
+```
+
+Both of the genres in these sits have striking similarities and these are just a few of the 626 genres that Spotify uses to classify its music data.  
+  
+Having these varied genres definitely aids in predicting user behaviour, similar to the Netflix Movie Prediction Program we did in the last course. But having these many genres also means that there is going to be major overlap and the distinction between genres is going to be very less. Our current genomes don't have enough range to appropriately house this variety of genres and still produce a desirable result.  
+  
+What works as a boon when it comes to predicting user behaviour works as a bane when it comes to predicting genres, thus serving as the main limitation.
+
+Perhaps in the future, if the data we recieved had the name of the artist, our algorithm would perform much better because artists don't usually tend to stray too far away from their genre (other than our occasional Bob Dylan). Also there could be a genre classification system that strikes a balance between user prediction and genre prediction.
